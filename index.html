@@ -3,13 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Open The Letter</title>
+    <title>Gyroscope Envelope</title>
     <style>
         body { 
             margin: 0; 
             overflow: hidden; 
             background-color: #1a1510; 
-            background-image: url('./bg.png');
+            background-image: url('https://i.ibb.co/yFdJkVMz/image.png');
             background-size: cover;
             background-position: center;
             background-repeat: no-repeat;
@@ -39,8 +39,7 @@
             transition: all 0.3s ease;
             box-shadow: 0 4px 15px rgba(0,0,0,0.5);
             z-index: 5;
-            opacity: 0; /* Hidden until loaded */
-            pointer-events: none;
+            opacity: 0; 
         }
         #openBtn:hover {
             background: #ffd700;
@@ -53,11 +52,18 @@
         @media (orientation: portrait) {
             #openBtn { bottom: 10%; left: 50%; transform: translateX(-50%); }
         }
+        
+        /* Simple overlay for iOS permission trigger if needed */
+        #tapOverlay {
+            position: fixed; top:0; left:0; width:100%; height:100%; z-index: 999;
+            display: none; 
+        }
     </style>
 </head>
 <body>
-    <div id="loader">PREPARING STATIONERY...</div>
+    <div id="loader">CALIBRATING SENSORS...</div>
     <button id="openBtn">OPEN LETTER</button>
+    <div id="tapOverlay"></div>
 
     <script type="importmap">
         {
@@ -73,13 +79,12 @@
         import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
         import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 
-        // --- ASSETS & CONFIG ---
         const ASSETS = {
-            art: './matte.png',
-            goldMask: './gold.png',
-            perfMask: './perforate.png',
-            cancel: 'cancel.png',
-            waxHeight: 'wax.png'
+            art: 'https://i.ibb.co/SXpk2PGG/matte.png',
+            goldMask: 'https://i.ibb.co/tPHN92m9/gold.png',
+            perfMask: 'https://i.ibb.co/GQWkdMps/perforate.png',
+            cancel: 'https://i.ibb.co/23y9b4km/image.png',
+            waxHeight: 'https://i.ibb.co/23PNqYB5/wax.png'
         };
 
         const FONT_NAME = "La Belle Aurore";
@@ -87,11 +92,7 @@
 
         // Animation States
         const STATE = {
-            CLOSED: 0,
-            OPENING_ROTATION: 1, // Resetting orientation to front
-            OPENING_SLIDE: 2,    // Sliding letter out & moving envelope
-            OPEN: 3,             // Idle open state
-            CLOSING_SLIDE: 4     // Putting letter back
+            CLOSED: 0, OPENING_ROTATION: 1, OPENING_SLIDE: 2, OPEN: 3, CLOSING_SLIDE: 4
         };
         let currentState = STATE.CLOSED;
 
@@ -163,7 +164,6 @@
             x.globalCompositeOperation='multiply'; x.drawImage(c.image,0,0,cv.width,cv.height);
             return new THREE.CanvasTexture(cv);
         }
-
         function drawPaperGrain(ctx, width, height) {
             const paperColor = '#f5f0e6'; 
             ctx.fillStyle = paperColor; ctx.fillRect(0, 0, width, height);
@@ -174,7 +174,6 @@
                 ctx.fillRect(x, y, 2, 2);
             }
         }
-
         function createLinedPaperTexture() {
             const w = 1024; const h = 1448; 
             const canvas = document.createElement('canvas'); canvas.width = w; canvas.height = h;
@@ -187,32 +186,15 @@
             }
             ctx.strokeStyle = "rgba(255, 100, 100, 0.4)"; ctx.lineWidth = 3;
             ctx.beginPath(); ctx.moveTo(140, 0); ctx.lineTo(140, h); ctx.stroke();
-            
             ctx.fillStyle = "#222"; ctx.font = `50px "${FONT_NAME}"`;
-            ctx.fillText("Hello World,", 160, 250);
-            
-            const lines = [
-                "I hope this letter finds you well.",
-                "The gold rendering turned out beautiful,",
-                "and the wax seal has finally cooled.",
-                "",
-                "But this product is still quite useless",
-                "because there is yet no way to harvest",
-                "stamps for my album.",
-                "",
-                "Sincerely,",
-                "   Ilz"
-            ];
+            ctx.fillText("Dear Friend,", 160, 250);
+            const lines = ["I hope this letter finds you well.", "The gold stamp turned out beautiful,", "and the wax seal has finally cooled.", "", "Enjoy the magic of 3D web!", "", "Sincerely,", "   Nyan Cat"];
             let ly = 250 + lineHeight * 2;
-            lines.forEach(line => {
-                ctx.fillText(line, 160, ly);
-                ly += lineHeight;
-            });
+            lines.forEach(line => { ctx.fillText(line, 160, ly); ly += lineHeight; });
             const tex = new THREE.CanvasTexture(canvas);
             tex.colorSpace = THREE.SRGBColorSpace;
             return tex;
         }
-
         function createFrontTexture(width, height) {
             const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
             const ctx = canvas.getContext('2d');
@@ -228,7 +210,6 @@
             tex.colorSpace = THREE.SRGBColorSpace;
             return tex;
         }
-
         function createBackTexture(width, height) {
             const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
             const ctx = canvas.getContext('2d');
@@ -246,7 +227,6 @@
             tex.colorSpace = THREE.SRGBColorSpace;
             return tex;
         }
-
         function createPaperBumpMap(width, height) {
             const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
             const ctx = canvas.getContext('2d');
@@ -277,7 +257,6 @@
         // --- 4. VARIABLES ---
         const raycaster = new THREE.Raycaster();
         const mouse = new THREE.Vector2();
-        
         let envelopeGroup = null;
         let letterMesh = null;
         let stampGroupReference = null;
@@ -288,17 +267,60 @@
         
         let isFlipped = false;
         let isZoomed = false;
+        let isLetterOpen = false;
+        
+        // Gyro State
+        let isGyroEnabled = false;
+        let gyroX = 0;
+        let gyroY = 0;
 
         const targetEnvPos = new THREE.Vector3(0, 0, 0);
         const targetLetterPos = new THREE.Vector3(0, 0, -0.01); 
         
         let currentFlipY = 0;
         let tiltX = 0; let tiltY = 0;
-        
         let visibleWidth = 14; 
         let visibleHeight = 10;
 
-        // --- 5. BUILD ---
+        // --- 5. GYROSCOPE HANDLER ---
+        function requestGyroAccess() {
+            if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+                // iOS 13+
+                DeviceOrientationEvent.requestPermission()
+                    .then(response => {
+                        if (response === 'granted') {
+                            window.addEventListener('deviceorientation', handleOrientation);
+                            isGyroEnabled = true;
+                        }
+                    })
+                    .catch(console.error);
+            } else if (window.DeviceOrientationEvent) {
+                // Non-iOS
+                window.addEventListener('deviceorientation', handleOrientation);
+                isGyroEnabled = true;
+            }
+        }
+
+        function handleOrientation(event) {
+            // Gamma: Left/Right tilt (-90 to 90)
+            // Beta: Front/Back tilt (-180 to 180)
+            
+            // Calibrate '0' to be a natural holding angle (~45 deg)
+            let x = event.gamma; // -90 to 90
+            let y = event.beta;  // -180 to 180
+            
+            // Limit ranges to avoid flipping out
+            // Map Gamma (-45 to 45) to (-1 to 1)
+            const maxTilt = 45;
+            gyroX = Math.min(Math.max(x, -maxTilt), maxTilt) / maxTilt;
+            
+            // Map Beta (Holding it up at 45deg is center)
+            // Center around 45. Range 0 to 90.
+            const centerBeta = 45;
+            gyroY = (Math.min(Math.max(y, centerBeta - maxTilt), centerBeta + maxTilt) - centerBeta) / maxTilt;
+        }
+
+        // --- 6. BUILD ---
         const loader = new THREE.TextureLoader();
 
         async function init() {
@@ -314,13 +336,19 @@
 
                 document.getElementById('loader').style.opacity = 0;
                 
-                // Setup Button
                 const btn = document.getElementById('openBtn');
                 btn.style.opacity = 1;
-                btn.style.pointerEvents = "auto";
-                btn.addEventListener('click', toggleLetter);
+                // Hook Gyro Request to the Button Click (User Interaction)
+                btn.addEventListener('click', () => {
+                    if(!isGyroEnabled) requestGyroAccess();
+                    toggleLetter();
+                });
+                
+                // Also hook to document click for iOS permission if they click envelope first
+                document.addEventListener('click', () => {
+                    if(!isGyroEnabled) requestGyroAccess();
+                }, { once: true });
 
-                // Config
                 texArt.colorSpace = THREE.SRGBColorSpace; 
                 texGold.colorSpace = THREE.NoColorSpace;
                 texPerf.colorSpace = THREE.NoColorSpace;
@@ -328,20 +356,18 @@
                 texWax.colorSpace = THREE.NoColorSpace; 
 
                 const waxNormal = generateNormalMapFromHeight(texWax.image);
-                
                 envelopeGroup = createSceneObjects(texArt, texGold, texPerf, texCancel, texWax, waxNormal);
                 scene.add(envelopeGroup);
                 
-                // Create Letter (Corrected Aspect Ratio)
                 const letterMap = createLinedPaperTexture();
-                // Letter size 6 x 8.5 (Portrait A4 Ratio)
                 const letterGeo = new THREE.PlaneGeometry(6, 8.5);
                 const letterMat = new THREE.MeshStandardMaterial({
                     map: letterMap, roughness: 0.9, metalness: 0.0, side: THREE.DoubleSide
                 });
                 letterMesh = new THREE.Mesh(letterGeo, letterMat);
                 letterMesh.position.set(0, 0, 0);
-                letterMesh.visible = false; // Hide initially
+                letterMesh.rotation.y = Math.PI; 
+                letterMesh.visible = false; 
                 scene.add(letterMesh);
 
                 updateCameraFit();
@@ -373,7 +399,6 @@
             group.add(frontDecor);
             addStampAndCancel(frontDecor, envWidth, envHeight, texArt, texGold, texPerf, texCancel);
 
-            // Wax Seal
             const sealSize = 2.2; 
             const sealGeo = new THREE.PlaneGeometry(sealSize, sealSize, 256, 256);
             const sealMat = new THREE.MeshPhysicalMaterial({
@@ -418,7 +443,6 @@
             parent.add(cMesh);
         }
 
-        // --- CAMERA & LOGIC ---
         function updateCameraFit() {
             const aspect = window.innerWidth / window.innerHeight;
             const vFovRad = camera.fov * (Math.PI / 180);
@@ -439,16 +463,11 @@
             const btn = document.getElementById('openBtn');
             
             if (currentState === STATE.CLOSED) {
-                // START OPENING
                 btn.innerText = "CLOSE LETTER";
                 isZoomed = false;
-                // Reset any flip instantly logic-wise
                 isFlipped = false; 
-                
-                // Start Rotation Phase
                 currentState = STATE.OPENING_ROTATION;
             } else {
-                // START CLOSING
                 btn.innerText = "OPEN LETTER";
                 currentState = STATE.CLOSING_SLIDE;
             }
@@ -476,6 +495,9 @@
         function onMouseClick(e) {
             if (currentState !== STATE.CLOSED) return; 
             
+            // Check if user clicked the button (handled by button listener)
+            if(e.target.id === 'openBtn') return;
+
             let cx, cy;
             if (e.changedTouches) { cx = e.changedTouches[0].clientX; cy = e.changedTouches[0].clientY; }
             else { cx = e.clientX; cy = e.clientY; }
@@ -484,7 +506,7 @@
             raycaster.setFromCamera(mouse, camera);
             
             if (isZoomed) { isZoomed = false; targetCamPos.copy(defaultCamPos); return; }
-            if (isFlipped) { isFlipped = false; return; }
+            if (isFlipped) { isFlipped = false; targetRotationY = 0; return; }
             
             if (stampGroupReference) {
                 const intersectsStamp = raycaster.intersectObjects(stampGroupReference.children);
@@ -495,7 +517,9 @@
                     targetCamPos.set(worldPos.x, worldPos.y, zoomZ);
                 } else {
                     const intersectsEnv = raycaster.intersectObject(envelopeGroup, true);
-                    if (intersectsEnv.length > 0) isFlipped = true;
+                    if (intersectsEnv.length > 0) {
+                        isFlipped = true; targetRotationY = Math.PI;
+                    }
                 }
             }
         }
@@ -505,39 +529,31 @@
             
             if(envelopeGroup && letterMesh) {
                 
-                // --- STATE MACHINE ANIMATION ---
+                // --- STATE MACHINE ---
                 if (currentState === STATE.OPENING_ROTATION) {
-                    // 1. Return to Front Face (0 rotation)
                     currentFlipY += (0 - currentFlipY) * 0.1;
                     tiltX += (0 - tiltX) * 0.1;
                     tiltY += (0 - tiltY) * 0.1;
                     
                     envelopeGroup.quaternion.setFromEuler(new THREE.Euler(tiltX, currentFlipY + tiltY, 0));
                     letterMesh.quaternion.copy(envelopeGroup.quaternion);
-
-                    // Camera Reset
                     targetCamPos.copy(defaultCamPos);
 
-                    // Check if rotation is nearly done
                     if (Math.abs(currentFlipY) < 0.05 && Math.abs(tiltX) < 0.05) {
                         currentState = STATE.OPENING_SLIDE;
-                        // Prepare Letter: Make visible and orient straight
                         letterMesh.visible = true;
                         letterMesh.rotation.set(0,0,0); 
                         letterMesh.position.copy(envelopeGroup.position);
                     }
 
                 } else if (currentState === STATE.OPENING_SLIDE || currentState === STATE.OPEN) {
-                    // 2. Slide Envelope to Corner
                     const targetX = (visibleWidth / 2) - 3.5; 
                     const targetY = -(visibleHeight / 2) + 2.5;
                     envelopeGroup.position.lerp(new THREE.Vector3(targetX, targetY, -2), 0.05);
                     
-                    // Tilt Envelope 45deg
                     const targetQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, Math.PI/4));
                     envelopeGroup.quaternion.slerp(targetQ, 0.05);
 
-                    // 3. Slide Letter to Center
                     letterMesh.position.lerp(new THREE.Vector3(0, 0, 2), 0.05);
                     letterMesh.rotation.set(0, 0, 0);
 
@@ -546,34 +562,39 @@
                     }
 
                 } else if (currentState === STATE.CLOSING_SLIDE) {
-                    // 4. Return Envelope to Center
                     envelopeGroup.position.lerp(new THREE.Vector3(0, 0, 0), 0.08);
-                    
-                    // Reset Envelope Rotation to Flat
                     const targetQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, 0));
                     envelopeGroup.quaternion.slerp(targetQ, 0.08);
 
-                    // 5. Return Letter to Envelope
                     letterMesh.position.lerp(envelopeGroup.position, 0.08);
                     
-                    // Hide when close enough
                     if (letterMesh.position.distanceTo(envelopeGroup.position) < 0.1) {
                         letterMesh.visible = false;
                         currentState = STATE.CLOSED;
-                        // Reset interaction variables
                         currentFlipY = 0; tiltX = 0; tiltY = 0; isFlipped = false;
                     }
 
                 } else {
-                    // IDLE / INTERACTIVE STATE
+                    // CLOSED / IDLE
                     envelopeGroup.position.lerp(new THREE.Vector3(0, Math.sin(Date.now() * 0.001) * 0.1, 0), 0.1);
                     letterMesh.position.copy(envelopeGroup.position);
                     
                     let targetFlip = isFlipped ? Math.PI : 0;
                     currentFlipY += (targetFlip - currentFlipY) * 0.08;
                     
+                    // Input Source: Mouse OR Gyro
                     let targetTiltX = 0, targetTiltY = 0;
-                    if(!isZoomed) { targetTiltX = mouse.y * 0.1; targetTiltY = mouse.x * 0.1; }
+                    if(!isZoomed) { 
+                        if (isGyroEnabled) {
+                            // Use Gyro Data
+                            targetTiltX = gyroY * 0.3; // Tilt Up/Down
+                            targetTiltY = gyroX * 0.3; // Tilt Left/Right
+                        } else {
+                            // Use Mouse Data
+                            targetTiltX = mouse.y * 0.1; 
+                            targetTiltY = mouse.x * 0.1; 
+                        }
+                    }
                     tiltX += (targetTiltX - tiltX) * 0.05;
                     tiltY += (targetTiltY - tiltY) * 0.05;
 
@@ -583,7 +604,6 @@
                 }
             }
             
-            // Camera
             if(currentState === STATE.CLOSED && isZoomed && stampGroupReference) {
                  const worldPos = new THREE.Vector3();
                  stampGroupReference.getWorldPosition(worldPos);

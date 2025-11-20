@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Envelope in the Study</title>
+    <style>
+        body { 
+            margin: 0; 
+            overflow: hidden; 
+            /* Fallback color */
+            background-color: #1a1510; 
+            /* The Study Image */
+            background-image: url('https://i.ibb.co/yFdJkVMz/image.png');
+            background-size: cover;
+            background-position: center;
+            background-repeat: no-repeat;
+        }
+        #loader {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            color: #f0e6d2; font-family: sans-serif; font-weight: bold; letter-spacing: 2px;
+            text-shadow: 0 2px 10px rgba(0,0,0,0.8);
+            text-align: center;
+            pointer-events: none;
+            transition: opacity 0.5s;
+        }
+    </style>
+</head>
+<body>
+    <div id="loader">ENTERING STUDY...</div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+        import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+
+        const STAMP_URLS = {
+            art: './matte.png',
+            goldMask: './gold.png',
+            perfMask: './perforate.png'
+        };
+
+        const FONT_NAME = "La Belle Aurore";
+        const FONT_URL = "https://fonts.googleapis.com/css2?family=La+Belle+Aurore&display=swap";
+
+        // --- 1. FONT LOADER ---
+        async function loadAndValidateFont() {
+            const link = document.createElement('link');
+            link.href = FONT_URL; link.rel = 'stylesheet';
+            document.head.appendChild(link);
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            const testString = "QMwm"; 
+            ctx.font = `100px sans-serif`;
+            const fallbackWidth = ctx.measureText(testString).width;
+            return new Promise((resolve) => {
+                let attempts = 0;
+                const interval = setInterval(() => {
+                    ctx.font = `100px "${FONT_NAME}", sans-serif`;
+                    const newWidth = ctx.measureText(testString).width;
+                    if (newWidth !== fallbackWidth && newWidth > 0) {
+                        clearInterval(interval); resolve();
+                    }
+                    if (attempts++ > 100) { clearInterval(interval); resolve(); }
+                }, 50);
+            });
+        }
+
+        // --- 2. TEXTURE GENERATORS ---
+        function createEnvelopeBumpMap(width, height) {
+            const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            const scale = 4;
+            const sw = Math.ceil(width/scale); const sh = Math.ceil(height/scale);
+            const sc = document.createElement('canvas'); sc.width=sw; sc.height=sh;
+            const sx = sc.getContext('2d');
+            const b32 = new Uint32Array(sx.createImageData(sw,sh).data.buffer);
+            for(let i=0; i<b32.length; i++) {
+                const val = Math.floor(Math.random() * 220);
+                b32[i] = (255<<24)|(val<<16)|(val<<8)|val;
+            }
+            sx.putImageData(new ImageData(new Uint8ClampedArray(b32.buffer), sw, sh), 0, 0);
+            ctx.drawImage(sc, 0, 0, width, height);
+            return new THREE.CanvasTexture(canvas);
+        }
+
+        function createEnvelopeTexture(width, height) {
+            const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            const paperColor = '#f5f0e6'; 
+            ctx.fillStyle = paperColor; ctx.fillRect(0, 0, width, height);
+            const fiberCount = (width * height) / 50; 
+            for (let i = 0; i < fiberCount; i++) {
+                const x = Math.random() * width; const y = Math.random() * height;
+                ctx.fillStyle = Math.random() > 0.5 ? 'rgba(140, 130, 110, 0.2)' : 'rgba(200, 200, 200, 0.2)';
+                ctx.fillRect(x, y, 2, 2);
+            }
+            ctx.shadowColor = "rgba(80, 70, 60, 0.1)"; ctx.shadowBlur = 30; ctx.shadowOffsetY = -5;
+            ctx.beginPath(); ctx.moveTo(0, height); ctx.lineTo(width/2, height * 0.58); ctx.lineTo(width, height);
+            ctx.fillStyle = paperColor; ctx.fill();
+            ctx.shadowOffsetY = 5;
+            ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(width/2, height * 0.45); ctx.lineTo(width, 0);
+            ctx.fillStyle = paperColor; ctx.fill(); ctx.shadowColor = "transparent";
+            ctx.strokeStyle = '#e6e0d0'; ctx.lineWidth = 2;
+            ctx.beginPath(); ctx.moveTo(0, height); ctx.lineTo(width/2, height * 0.58); ctx.lineTo(width, height); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(width/2, height * 0.45); ctx.lineTo(width, 0); ctx.stroke();
+            
+            // ADDRESS
+            ctx.fillStyle = "#1a1a3a"; ctx.textAlign = "center"; ctx.translate(width / 2, height / 1.8);
+            ctx.font = `110px "${FONT_NAME}"`;
+            const lh = 140;
+            ctx.fillText("Nyan Cat", 0, 0);
+            ctx.font = `75px "${FONT_NAME}"`;
+            ctx.fillText("42 Rainbow Road", 0, lh);
+            ctx.fillText("Internet, The World", 0, lh * 2);
+            
+            const tex = new THREE.CanvasTexture(canvas);
+            tex.colorSpace = THREE.SRGBColorSpace;
+            return tex;
+        }
+
+        // --- 3. STAMP HELPERS ---
+        function createCompositeMask(s,c) {
+            const cv = document.createElement('canvas'); cv.width=s.image.width; cv.height=s.image.height;
+            const x = cv.getContext('2d'); x.drawImage(s.image,0,0);
+            x.globalCompositeOperation='multiply'; x.drawImage(c.image,0,0,cv.width,cv.height);
+            return new THREE.CanvasTexture(cv);
+        }
+        function createGoldBumpMap(img) {
+            const c = document.createElement('canvas'); c.width=img.width; c.height=img.height;
+            const x = c.getContext('2d');
+            x.fillStyle='black'; x.fillRect(0,0,c.width,c.height);
+            x.filter='blur(8px)'; x.drawImage(img,0,0); x.filter='none';
+            const nc = document.createElement('canvas'); nc.width=256; nc.height=256;
+            const nx = nc.getContext('2d'); const nd = nx.createImageData(256,256);
+            const nb = new Uint32Array(nd.data.buffer);
+            for(let i=0; i<nb.length; i++) { const v = Math.floor(Math.random()*255); nb[i]=(255<<24)|(v<<16)|(v<<8)|v; }
+            nx.putImageData(nd,0,0);
+            x.globalCompositeOperation='source-in'; x.globalAlpha=0.3; x.drawImage(nc,0,0,c.width,c.height);
+            return new THREE.CanvasTexture(c);
+        }
+        function createCompositeBumpMap(image) {
+            const cv = document.createElement('canvas'); cv.width = image.width; cv.height = image.height;
+            const ctx = cv.getContext('2d');
+            const sc = document.createElement('canvas'); sc.width = Math.ceil(cv.width/8); sc.height = Math.ceil(cv.height/8);
+            const sx = sc.getContext('2d');
+            const b32 = new Uint32Array(sx.createImageData(sc.width,sc.height).data.buffer);
+            for(let i=0; i<b32.length; i++) { const v = Math.floor(Math.random() * 180); b32[i] = (255<<24)|(v<<16)|(v<<8)|v; }
+            sx.putImageData(new ImageData(new Uint8ClampedArray(b32.buffer), sc.width, sc.height), 0, 0);
+            ctx.drawImage(sc, 0, 0, cv.width, cv.height);
+            const ic = document.createElement('canvas'); ic.width=cv.width; ic.height=cv.height;
+            const ix = ic.getContext('2d'); ix.drawImage(image,0,0);
+            const d = ix.getImageData(0,0,cv.width,cv.height).data;
+            for(let i=0; i<d.length; i+=4) { if(d[i]<90 && d[i+1]<90 && d[i+2]<90) d[i]=d[i+1]=d[i+2]=d[i+3]=255; else d[i+3]=0; }
+            ix.putImageData(new ImageData(d, cv.width, cv.height), 0, 0);
+            ctx.globalCompositeOperation = 'source-over'; ctx.filter = 'blur(1px)'; ctx.drawImage(ic, 0, 0);
+            return new THREE.CanvasTexture(cv);
+        }
+        function createSelectiveRoughnessMap(image) {
+            const cv = document.createElement('canvas'); cv.width=image.width; cv.height=image.height;
+            const ctx = cv.getContext('2d'); ctx.drawImage(image,0,0);
+            const d = ctx.getImageData(0,0,cv.width,cv.height).data;
+            for(let i=0; i<d.length; i+=4) { if(d[i]<90) d[i]=d[i+1]=d[i+2]=90; else d[i]=d[i+1]=d[i+2]=255; d[i+3]=255; }
+            ctx.putImageData(new ImageData(d, cv.width, cv.height), 0, 0);
+            return new THREE.CanvasTexture(cv);
+        }
+
+        // --- 4. SCENE ---
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(35, window.innerWidth / window.innerHeight, 0.1, 100);
+        camera.position.set(0, 0, 14);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.0;
+        document.body.appendChild(renderer.domElement);
+
+        const pmremGenerator = new THREE.PMREMGenerator(renderer);
+        scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
+
+        // --- 5. INTERACTION ---
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+        let stampGroupReference = null;
+        const defaultCamPos = new THREE.Vector3(0, 0, 14);
+        let targetCamPos = new THREE.Vector3(0, 0, 14);
+        let isZoomed = false;
+
+        // --- 6. INIT ---
+        const loader = new THREE.TextureLoader();
+
+        async function init() {
+            try {
+                await loadAndValidateFont();
+                const [texArt, texGold, texPerf] = await Promise.all([
+                    loader.loadAsync(STAMP_URLS.art),
+                    loader.loadAsync(STAMP_URLS.goldMask),
+                    loader.loadAsync(STAMP_URLS.perfMask)
+                ]);
+
+                document.getElementById('loader').style.opacity = 0;
+
+                texArt.colorSpace = THREE.SRGBColorSpace; 
+                texGold.colorSpace = THREE.NoColorSpace;
+                texPerf.colorSpace = THREE.NoColorSpace;
+
+                const finalGoldMask = createCompositeMask(texGold, texPerf);
+                const goldBumpMap = createGoldBumpMap(texGold.image);
+                const spotVarnishMap = createSelectiveRoughnessMap(texArt.image);
+                const artBumpMap = createCompositeBumpMap(texArt.image);
+
+                const envelopeGroup = createEnvelope(texArt, texPerf, finalGoldMask, goldBumpMap, artBumpMap, spotVarnishMap);
+                scene.add(envelopeGroup);
+                
+                animate(envelopeGroup);
+                window.addEventListener('pointermove', onPointerMove);
+                window.addEventListener('click', onMouseClick);
+            } catch (err) { console.error(err); }
+        }
+
+        function createEnvelope(texArt, texPerf, finalGoldMask, goldBumpMap, artBumpMap, spotVarnishMap) {
+            const group = new THREE.Group();
+
+            const envWidth = 10; const envHeight = 6.5;
+            const thickness = 0.05; const radius = 0.2;
+            const envGeo = new RoundedBoxGeometry(envWidth, envHeight, thickness, 4, radius);
+
+            const envMap = createEnvelopeTexture(2048, 1331);
+            const envBump = createEnvelopeBumpMap(1024, 665);
+
+            const envMat = new THREE.MeshStandardMaterial({
+                map: envMap, bumpMap: envBump, bumpScale: 0.4,
+                roughness: 1.0, color: 0xffffff
+            });
+            const envelope = new THREE.Mesh(envGeo, envMat);
+            group.add(envelope);
+
+            // Stamp
+            const stampGroup = new THREE.Group();
+            stampGroup.name = "STAMP_GROUP";
+            stampGroupReference = stampGroup;
+
+            const aspect = texArt.image.width / texArt.image.height;
+            const sHeight = 1.5; const sWidth = sHeight * aspect;
+            const stampGeo = new THREE.PlaneGeometry(sWidth, sHeight);
+
+            const artMat = new THREE.MeshStandardMaterial({
+                map: texArt, alphaMap: texPerf, transparent: true,
+                roughness: 1.0, roughnessMap: spotVarnishMap,
+                bumpMap: artBumpMap, bumpScale: 0.8,
+                metalness: 0.0, alphaTest: 0.5
+            });
+            const artMesh = new THREE.Mesh(stampGeo, artMat);
+            stampGroup.add(artMesh);
+
+            const goldMat = new THREE.MeshPhysicalMaterial({
+                color: 0xffd700, metalness: 1.0, roughness: 0.2,
+                bumpMap: goldBumpMap, bumpScale: 0.15, alphaMap: finalGoldMask,
+                transparent: true, envMapIntensity: 2.5,
+                clearcoat: 0.6, clearcoatRoughness: 0.1
+            });
+            const goldMesh = new THREE.Mesh(stampGeo, goldMat);
+            goldMesh.position.z = 0.005; 
+            stampGroup.add(goldMesh);
+
+            const padding = 0.6;
+            stampGroup.position.set(
+                (envWidth / 2) - (sWidth / 2) - padding, 
+                (envHeight / 2) - (sHeight / 2) - padding, 
+                thickness / 2 + 0.01
+            );
+            group.add(stampGroup);
+            return group;
+        }
+
+        // --- EVENTS ---
+        function onPointerMove(event) {
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+            raycaster.setFromCamera(mouse, camera);
+            if(stampGroupReference) {
+                const intersects = raycaster.intersectObjects(stampGroupReference.children);
+                document.body.style.cursor = intersects.length > 0 ? 'pointer' : 'default';
+            }
+        }
+
+        function onMouseClick(event) {
+            raycaster.setFromCamera(mouse, camera);
+            if(stampGroupReference) {
+                const intersects = raycaster.intersectObjects(stampGroupReference.children);
+                if (intersects.length > 0) {
+                    isZoomed = true;
+                    const worldPos = new THREE.Vector3();
+                    stampGroupReference.getWorldPosition(worldPos);
+                    targetCamPos.set(worldPos.x, worldPos.y, 3.5);
+                } else {
+                    isZoomed = false;
+                    targetCamPos.copy(defaultCamPos);
+                }
+            }
+        }
+
+        // --- ANIMATION ---
+        let currentMouseX = 0;
+        let currentMouseY = 0;
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        function animate(group) {
+            requestAnimationFrame(() => animate(group));
+            const rotationStrength = isZoomed ? 0.01 : 0.15;
+            currentMouseX += (mouse.x * rotationStrength - currentMouseX) * 0.05;
+            currentMouseY += (mouse.y * rotationStrength - currentMouseY) * 0.05;
+            group.rotation.y = currentMouseX;
+            group.rotation.x = currentMouseY;
+            if(isZoomed && stampGroupReference) {
+                const worldPos = new THREE.Vector3();
+                stampGroupReference.getWorldPosition(worldPos);
+                targetCamPos.set(worldPos.x, worldPos.y, 3.5);
+            }
+            camera.position.lerp(targetCamPos, 0.05);
+            renderer.render(scene, camera);
+        }
+
+        init();
+    </script>
+</body>
+</html>

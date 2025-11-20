@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Open The Letter</title>
+    <style>
+        body { 
+            margin: 0; 
+            overflow: hidden; 
+            background-color: #1a1510; 
+            background-image: url('./bg.png');
+            background-size: cover;
+            background-position: center;
+            background-repeat: no-repeat;
+        }
+        #loader {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            color: #e0e0e0; font-family: sans-serif; font-weight: bold; letter-spacing: 2px;
+            text-shadow: 0 0 10px rgba(0,0,0,0.8);
+            text-align: center;
+            pointer-events: none;
+            transition: opacity 0.5s;
+            width: 100%;
+            z-index: 10;
+        }
+        
+        #openBtn {
+            position: absolute;
+            padding: 15px 40px;
+            background: rgba(20, 20, 20, 0.9);
+            border: 2px solid #ffd700;
+            color: #ffd700;
+            font-family: 'Courier New', serif;
+            font-size: 18px;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+            z-index: 5;
+            opacity: 0; /* Hidden until loaded */
+            pointer-events: none;
+        }
+        #openBtn:hover {
+            background: #ffd700;
+            color: #000;
+            box-shadow: 0 0 20px rgba(255, 215, 0, 0.6);
+        }
+        @media (orientation: landscape) {
+            #openBtn { top: 50%; right: 5%; transform: translateY(-50%); }
+        }
+        @media (orientation: portrait) {
+            #openBtn { bottom: 10%; left: 50%; transform: translateX(-50%); }
+        }
+    </style>
+</head>
+<body>
+    <div id="loader">PREPARING STATIONERY...</div>
+    <button id="openBtn">OPEN LETTER</button>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+        import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+
+        // --- ASSETS & CONFIG ---
+        const ASSETS = {
+            art: './matte.png',
+            goldMask: './gold.png',
+            perfMask: './perforate.png',
+            cancel: 'cancel.png',
+            waxHeight: 'wax.png'
+        };
+
+        const FONT_NAME = "La Belle Aurore";
+        const FONT_URL = "https://fonts.googleapis.com/css2?family=La+Belle+Aurore&display=swap";
+
+        // Animation States
+        const STATE = {
+            CLOSED: 0,
+            OPENING_ROTATION: 1, // Resetting orientation to front
+            OPENING_SLIDE: 2,    // Sliding letter out & moving envelope
+            OPEN: 3,             // Idle open state
+            CLOSING_SLIDE: 4     // Putting letter back
+        };
+        let currentState = STATE.CLOSED;
+
+        // --- 1. UTILITIES ---
+        async function loadAndValidateFont() {
+            const link = document.createElement('link');
+            link.href = FONT_URL; link.rel = 'stylesheet';
+            document.head.appendChild(link);
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            const testString = "QMwm"; 
+            ctx.font = `100px sans-serif`;
+            const fallbackWidth = ctx.measureText(testString).width;
+            return new Promise((resolve) => {
+                let attempts = 0;
+                const interval = setInterval(() => {
+                    ctx.font = `100px "${FONT_NAME}", sans-serif`;
+                    const newWidth = ctx.measureText(testString).width;
+                    if (newWidth !== fallbackWidth && newWidth > 0) {
+                        clearInterval(interval); resolve();
+                    }
+                    if (attempts++ > 100) { clearInterval(interval); resolve(); }
+                }, 50);
+            });
+        }
+
+        function generateNormalMapFromHeight(image) {
+            const width = image.width; const height = image.height;
+            const canvas = document.createElement('canvas');
+            canvas.width = width; canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(image, 0, 0);
+            const srcData = ctx.getImageData(0, 0, width, height).data;
+            const dstData = ctx.createImageData(width, height);
+            const data = dstData.data;
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    const x1 = (x > 0) ? x - 1 : 0; const x2 = (x < width - 1) ? x + 1 : width - 1;
+                    const y1 = (y > 0) ? y - 1 : 0; const y2 = (y < height - 1) ? y + 1 : height - 1;
+                    const hL = srcData[(y * width + x1) * 4] / 255.0;
+                    const hR = srcData[(y * width + x2) * 4] / 255.0;
+                    const hT = srcData[(y1 * width + x) * 4] / 255.0;
+                    const hB = srcData[(y2 * width + x) * 4] / 255.0;
+                    const dx = (hL - hR) * 2.5; const dy = (hT - hB) * 2.5; const dz = 1.0;
+                    const len = Math.sqrt(dx*dx + dy*dy + dz*dz);
+                    const i = (y * width + x) * 4;
+                    data[i] = ((dx / len) * 0.5 + 0.5) * 255;
+                    data[i+1] = ((dy / len) * 0.5 + 0.5) * 255;
+                    data[i+2] = (dz / len) * 255;
+                    data[i+3] = 255;
+                }
+            }
+            ctx.putImageData(dstData, 0, 0);
+            const tex = new THREE.CanvasTexture(canvas);
+            tex.colorSpace = THREE.NoColorSpace;
+            return tex;
+        }
+
+        // --- 2. TEXTURE GENERATORS ---
+        function createGoldBump(img) {
+            const c = document.createElement('canvas'); c.width=img.width; c.height=img.height;
+            const x = c.getContext('2d'); x.fillStyle='black'; x.fillRect(0,0,c.width,c.height);
+            x.filter='blur(8px)'; x.drawImage(img,0,0); x.filter='none';
+            return new THREE.CanvasTexture(c);
+        }
+        function createCompositeMask(s,c) {
+            const cv = document.createElement('canvas'); cv.width=s.image.width; cv.height=s.image.height;
+            const x = cv.getContext('2d'); x.drawImage(s.image,0,0);
+            x.globalCompositeOperation='multiply'; x.drawImage(c.image,0,0,cv.width,cv.height);
+            return new THREE.CanvasTexture(cv);
+        }
+
+        function drawPaperGrain(ctx, width, height) {
+            const paperColor = '#f5f0e6'; 
+            ctx.fillStyle = paperColor; ctx.fillRect(0, 0, width, height);
+            const fiberCount = (width * height) / 50; 
+            for (let i = 0; i < fiberCount; i++) {
+                const x = Math.random() * width; const y = Math.random() * height;
+                ctx.fillStyle = Math.random() > 0.5 ? 'rgba(140, 130, 110, 0.2)' : 'rgba(200, 200, 200, 0.2)';
+                ctx.fillRect(x, y, 2, 2);
+            }
+        }
+
+        function createLinedPaperTexture() {
+            const w = 1024; const h = 1448; 
+            const canvas = document.createElement('canvas'); canvas.width = w; canvas.height = h;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = "#fdfdfd"; ctx.fillRect(0,0,w,h);
+            ctx.strokeStyle = "rgba(100, 100, 255, 0.3)"; ctx.lineWidth = 2;
+            const lineHeight = 60;
+            for(let y = 200; y < h; y += lineHeight) {
+                ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+            }
+            ctx.strokeStyle = "rgba(255, 100, 100, 0.4)"; ctx.lineWidth = 3;
+            ctx.beginPath(); ctx.moveTo(140, 0); ctx.lineTo(140, h); ctx.stroke();
+            
+            ctx.fillStyle = "#222"; ctx.font = `50px "${FONT_NAME}"`;
+            ctx.fillText("Hello World,", 160, 250);
+            
+            const lines = [
+                "I hope this letter finds you well.",
+                "The gold rendering turned out beautiful,",
+                "and the wax seal has finally cooled.",
+                "",
+                "But this product is still quite useless",
+                "because there is yet no way to harvest",
+                "stamps for my album.",
+                "",
+                "Sincerely,",
+                "   Ilz"
+            ];
+            let ly = 250 + lineHeight * 2;
+            lines.forEach(line => {
+                ctx.fillText(line, 160, ly);
+                ly += lineHeight;
+            });
+            const tex = new THREE.CanvasTexture(canvas);
+            tex.colorSpace = THREE.SRGBColorSpace;
+            return tex;
+        }
+
+        function createFrontTexture(width, height) {
+            const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            drawPaperGrain(ctx, width, height);
+            ctx.fillStyle = "#1a1a3a"; ctx.textAlign = "center"; ctx.translate(width / 2, height / 1.8);
+            ctx.font = `110px "${FONT_NAME}"`;
+            const lh = 140;
+            ctx.fillText("Nyan Cat", 0, 0);
+            ctx.font = `75px "${FONT_NAME}"`;
+            ctx.fillText("42 Rainbow Road", 0, lh);
+            ctx.fillText("Internet, The World", 0, lh * 2);
+            const tex = new THREE.CanvasTexture(canvas);
+            tex.colorSpace = THREE.SRGBColorSpace;
+            return tex;
+        }
+
+        function createBackTexture(width, height) {
+            const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            drawPaperGrain(ctx, width, height);
+            ctx.shadowColor = "rgba(80, 70, 60, 0.2)"; ctx.shadowBlur = 50; ctx.shadowOffsetY = 5;
+            ctx.beginPath(); ctx.moveTo(0, height); ctx.lineTo(width, height); ctx.lineTo(width / 2, height * 0.45); ctx.lineTo(0, height);
+            ctx.fillStyle = '#f5f0e6'; ctx.fill();
+            ctx.shadowOffsetY = 15; 
+            ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(width, 0); ctx.lineTo(width / 2, height * 0.55); ctx.lineTo(0, 0);
+            ctx.fillStyle = '#f5f0e6'; ctx.fill();
+            ctx.shadowColor = 'transparent'; ctx.strokeStyle = '#d8d0c0'; ctx.lineWidth = 2;
+            ctx.beginPath(); ctx.moveTo(0, height); ctx.lineTo(width/2, height*0.45); ctx.lineTo(width, height); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(width/2, height*0.55); ctx.lineTo(width, 0); ctx.stroke();
+            const tex = new THREE.CanvasTexture(canvas);
+            tex.colorSpace = THREE.SRGBColorSpace;
+            return tex;
+        }
+
+        function createPaperBumpMap(width, height) {
+            const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            const scale = 4; const sw = Math.ceil(width/scale); const sh = Math.ceil(height/scale);
+            const sc = document.createElement('canvas'); sc.width=sw; sc.height=sh;
+            const sx = sc.getContext('2d');
+            const b32 = new Uint32Array(sx.createImageData(sw,sh).data.buffer);
+            for(let i=0; i<b32.length; i++) { const val = Math.floor(Math.random() * 220); b32[i] = (255<<24)|(val<<16)|(val<<8)|val; }
+            sx.putImageData(new ImageData(new Uint8ClampedArray(b32.buffer), sw, sh), 0, 0);
+            ctx.drawImage(sc, 0, 0, width, height);
+            return new THREE.CanvasTexture(canvas);
+        }
+
+        // --- 3. SCENE ---
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(35, window.innerWidth / window.innerHeight, 0.1, 100);
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.0; 
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        document.body.appendChild(renderer.domElement);
+        const pmremGenerator = new THREE.PMREMGenerator(renderer);
+        scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
+
+        // --- 4. VARIABLES ---
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+        
+        let envelopeGroup = null;
+        let letterMesh = null;
+        let stampGroupReference = null;
+        
+        let defaultZ = 14; let zoomZ = 3.5;
+        const defaultCamPos = new THREE.Vector3(0, 0, 14);
+        const targetCamPos = new THREE.Vector3(0, 0, 14);
+        
+        let isFlipped = false;
+        let isZoomed = false;
+
+        const targetEnvPos = new THREE.Vector3(0, 0, 0);
+        const targetLetterPos = new THREE.Vector3(0, 0, -0.01); 
+        
+        let currentFlipY = 0;
+        let tiltX = 0; let tiltY = 0;
+        
+        let visibleWidth = 14; 
+        let visibleHeight = 10;
+
+        // --- 5. BUILD ---
+        const loader = new THREE.TextureLoader();
+
+        async function init() {
+            try {
+                await loadAndValidateFont();
+                const [texArt, texGold, texPerf, texCancel, texWax] = await Promise.all([
+                    loader.loadAsync(ASSETS.art),
+                    loader.loadAsync(ASSETS.goldMask),
+                    loader.loadAsync(ASSETS.perfMask),
+                    loader.loadAsync(ASSETS.cancel),
+                    loader.loadAsync(ASSETS.waxHeight)
+                ]);
+
+                document.getElementById('loader').style.opacity = 0;
+                
+                // Setup Button
+                const btn = document.getElementById('openBtn');
+                btn.style.opacity = 1;
+                btn.style.pointerEvents = "auto";
+                btn.addEventListener('click', toggleLetter);
+
+                // Config
+                texArt.colorSpace = THREE.SRGBColorSpace; 
+                texGold.colorSpace = THREE.NoColorSpace;
+                texPerf.colorSpace = THREE.NoColorSpace;
+                texCancel.colorSpace = THREE.SRGBColorSpace;
+                texWax.colorSpace = THREE.NoColorSpace; 
+
+                const waxNormal = generateNormalMapFromHeight(texWax.image);
+                
+                envelopeGroup = createSceneObjects(texArt, texGold, texPerf, texCancel, texWax, waxNormal);
+                scene.add(envelopeGroup);
+                
+                // Create Letter (Corrected Aspect Ratio)
+                const letterMap = createLinedPaperTexture();
+                // Letter size 6 x 8.5 (Portrait A4 Ratio)
+                const letterGeo = new THREE.PlaneGeometry(6, 8.5);
+                const letterMat = new THREE.MeshStandardMaterial({
+                    map: letterMap, roughness: 0.9, metalness: 0.0, side: THREE.DoubleSide
+                });
+                letterMesh = new THREE.Mesh(letterGeo, letterMat);
+                letterMesh.position.set(0, 0, 0);
+                letterMesh.visible = false; // Hide initially
+                scene.add(letterMesh);
+
+                updateCameraFit();
+                animate();
+                window.addEventListener('pointermove', onPointerMove);
+                window.addEventListener('click', onMouseClick);
+                window.addEventListener('resize', updateCameraFit);
+            } catch (err) { console.error(err); }
+        }
+
+        function createSceneObjects(texArt, texGold, texPerf, texCancel, texWax, waxNormal) {
+            const group = new THREE.Group();
+            const envWidth = 10; const envHeight = 6.5;
+            const thickness = 0.05; const radius = 0.2;
+
+            const frontMap = createFrontTexture(2048, 1331);
+            const backMap = createBackTexture(2048, 1331);
+            const bumpMap = createPaperBumpMap(1024, 665);
+            const matPaper = new THREE.MeshStandardMaterial({ map: frontMap, bumpMap: bumpMap, bumpScale: 0.3, roughness: 1.0, color: 0xffffff });
+            const matBack = new THREE.MeshStandardMaterial({ map: backMap, bumpMap: bumpMap, bumpScale: 0.3, roughness: 1.0, color: 0xffffff });
+            const matEdge = new THREE.MeshStandardMaterial({ color: 0xf5f0e6, roughness: 1.0 });
+            const materials = [matEdge, matEdge, matEdge, matEdge, matPaper, matBack];
+            const envGeo = new RoundedBoxGeometry(envWidth, envHeight, thickness, 4, radius);
+            const envelope = new THREE.Mesh(envGeo, materials);
+            group.add(envelope);
+
+            const frontDecor = new THREE.Group();
+            frontDecor.position.z = thickness / 2 + 0.005; 
+            group.add(frontDecor);
+            addStampAndCancel(frontDecor, envWidth, envHeight, texArt, texGold, texPerf, texCancel);
+
+            // Wax Seal
+            const sealSize = 2.2; 
+            const sealGeo = new THREE.PlaneGeometry(sealSize, sealSize, 256, 256);
+            const sealMat = new THREE.MeshPhysicalMaterial({
+                color: 0x660000, emissive: 0x330000, emissiveIntensity: 0.5, 
+                metalness: 0.3, roughness: 0.35, specularIntensity: 0.5, envMapIntensity: 0.4,   
+                displacementMap: texWax, displacementScale: 0.12,
+                normalMap: waxNormal, normalScale: new THREE.Vector2(1.5, 1.5),
+                alphaMap: texWax, transparent: true, side: THREE.DoubleSide, alphaTest: 0.1,
+                clearcoat: 0.5, clearcoatRoughness: 0.1
+            });
+            const sealMesh = new THREE.Mesh(sealGeo, sealMat);
+            sealMesh.position.set(0, 0.5, -thickness / 2 - 0.07); 
+            sealMesh.rotation.y = Math.PI; 
+            group.add(sealMesh);
+
+            return group;
+        }
+
+        function addStampAndCancel(parent, envW, envH, texArt, texGold, texPerf, texCancel) {
+            const aspect = texArt.image.width / texArt.image.height;
+            const sH = 1.5; const sW = sH * aspect;
+            const geo = new THREE.PlaneGeometry(sW, sH);
+            const goldBump = createGoldBump(texGold.image);
+            const goldMask = createCompositeMask(texGold, texPerf);
+            const artMat = new THREE.MeshStandardMaterial({ map: texArt, alphaMap: texPerf, transparent: true, roughness: 1.0, metalness: 0.0, alphaTest: 0.5 });
+            const goldMat = new THREE.MeshPhysicalMaterial({ color: 0xffd700, metalness: 1.0, roughness: 0.2, bumpMap: goldBump, bumpScale: 0.15, alphaMap: goldMask, transparent: true, envMapIntensity: 2.5, clearcoat: 1.0 });
+            const artMesh = new THREE.Mesh(geo, artMat);
+            const goldMesh = new THREE.Mesh(geo, goldMat);
+            goldMesh.position.z = 0.005;
+            const stampGrp = new THREE.Group();
+            stampGrp.add(artMesh, goldMesh);
+            stampGrp.name = "STAMP_GROUP"; 
+            stampGroupReference = stampGrp; 
+            const pad = 0.6;
+            stampGrp.position.set((envW/2)-(sW/2)-pad, (envH/2)-(sH/2)-pad, 0);
+            parent.add(stampGrp);
+            const cSize = sH * 1.4;
+            const cMat = new THREE.MeshStandardMaterial({ map: texCancel, transparent: true, opacity: 0.85, roughness: 1.0, polygonOffset: true, polygonOffsetFactor: -10 });
+            const cMesh = new THREE.Mesh(new THREE.PlaneGeometry(cSize, cSize), cMat);
+            cMesh.renderOrder = 99;
+            cMesh.position.set(stampGrp.position.x - sW*0.25, stampGrp.position.y - sH*0.25, 0.015);
+            parent.add(cMesh);
+        }
+
+        // --- CAMERA & LOGIC ---
+        function updateCameraFit() {
+            const aspect = window.innerWidth / window.innerHeight;
+            const vFovRad = camera.fov * (Math.PI / 180);
+            const distHeight = (6.5 * 1.3) / (2 * Math.tan(vFovRad / 2));
+            const distWidth = (10 * 1.3) / (2 * aspect * Math.tan(vFovRad / 2));
+            defaultZ = Math.max(distHeight, distWidth);
+            if(aspect < 0.8) zoomZ = 7.0; else zoomZ = 3.5;
+            defaultCamPos.set(0,0,defaultZ);
+            if(currentState === STATE.CLOSED && !isZoomed) targetCamPos.copy(defaultCamPos);
+            
+            visibleHeight = 2 * Math.tan(vFovRad / 2) * defaultZ;
+            visibleWidth = visibleHeight * aspect;
+            camera.aspect = aspect; camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function toggleLetter() {
+            const btn = document.getElementById('openBtn');
+            
+            if (currentState === STATE.CLOSED) {
+                // START OPENING
+                btn.innerText = "CLOSE LETTER";
+                isZoomed = false;
+                // Reset any flip instantly logic-wise
+                isFlipped = false; 
+                
+                // Start Rotation Phase
+                currentState = STATE.OPENING_ROTATION;
+            } else {
+                // START CLOSING
+                btn.innerText = "OPEN LETTER";
+                currentState = STATE.CLOSING_SLIDE;
+            }
+        }
+
+        function onPointerMove(e) {
+            if(e.type === 'touchmove') e.preventDefault();
+            let cx, cy;
+            if (e.changedTouches) { cx = e.changedTouches[0].clientX; cy = e.changedTouches[0].clientY; }
+            else { cx = e.clientX; cy = e.clientY; }
+            mouse.x = (cx / window.innerWidth) * 2 - 1;
+            mouse.y = -(cy / window.innerHeight) * 2 + 1;
+            
+            if (currentState !== STATE.CLOSED) { document.body.style.cursor = 'default'; return; }
+
+            raycaster.setFromCamera(mouse, camera);
+            if (stampGroupReference && !isFlipped) {
+                const intersects = raycaster.intersectObjects(stampGroupReference.children);
+                document.body.style.cursor = intersects.length > 0 ? 'pointer' : 'default';
+            } else {
+                document.body.style.cursor = 'default';
+            }
+        }
+
+        function onMouseClick(e) {
+            if (currentState !== STATE.CLOSED) return; 
+            
+            let cx, cy;
+            if (e.changedTouches) { cx = e.changedTouches[0].clientX; cy = e.changedTouches[0].clientY; }
+            else { cx = e.clientX; cy = e.clientY; }
+            mouse.x = (cx / window.innerWidth) * 2 - 1;
+            mouse.y = -(cy / window.innerHeight) * 2 + 1;
+            raycaster.setFromCamera(mouse, camera);
+            
+            if (isZoomed) { isZoomed = false; targetCamPos.copy(defaultCamPos); return; }
+            if (isFlipped) { isFlipped = false; return; }
+            
+            if (stampGroupReference) {
+                const intersectsStamp = raycaster.intersectObjects(stampGroupReference.children);
+                if (intersectsStamp.length > 0) {
+                    isZoomed = true;
+                    const worldPos = new THREE.Vector3();
+                    stampGroupReference.getWorldPosition(worldPos);
+                    targetCamPos.set(worldPos.x, worldPos.y, zoomZ);
+                } else {
+                    const intersectsEnv = raycaster.intersectObject(envelopeGroup, true);
+                    if (intersectsEnv.length > 0) isFlipped = true;
+                }
+            }
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            if(envelopeGroup && letterMesh) {
+                
+                // --- STATE MACHINE ANIMATION ---
+                if (currentState === STATE.OPENING_ROTATION) {
+                    // 1. Return to Front Face (0 rotation)
+                    currentFlipY += (0 - currentFlipY) * 0.1;
+                    tiltX += (0 - tiltX) * 0.1;
+                    tiltY += (0 - tiltY) * 0.1;
+                    
+                    envelopeGroup.quaternion.setFromEuler(new THREE.Euler(tiltX, currentFlipY + tiltY, 0));
+                    letterMesh.quaternion.copy(envelopeGroup.quaternion);
+
+                    // Camera Reset
+                    targetCamPos.copy(defaultCamPos);
+
+                    // Check if rotation is nearly done
+                    if (Math.abs(currentFlipY) < 0.05 && Math.abs(tiltX) < 0.05) {
+                        currentState = STATE.OPENING_SLIDE;
+                        // Prepare Letter: Make visible and orient straight
+                        letterMesh.visible = true;
+                        letterMesh.rotation.set(0,0,0); 
+                        letterMesh.position.copy(envelopeGroup.position);
+                    }
+
+                } else if (currentState === STATE.OPENING_SLIDE || currentState === STATE.OPEN) {
+                    // 2. Slide Envelope to Corner
+                    const targetX = (visibleWidth / 2) - 3.5; 
+                    const targetY = -(visibleHeight / 2) + 2.5;
+                    envelopeGroup.position.lerp(new THREE.Vector3(targetX, targetY, -2), 0.05);
+                    
+                    // Tilt Envelope 45deg
+                    const targetQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, Math.PI/4));
+                    envelopeGroup.quaternion.slerp(targetQ, 0.05);
+
+                    // 3. Slide Letter to Center
+                    letterMesh.position.lerp(new THREE.Vector3(0, 0, 2), 0.05);
+                    letterMesh.rotation.set(0, 0, 0);
+
+                    if (currentState === STATE.OPENING_SLIDE && letterMesh.position.z > 1.0) {
+                        currentState = STATE.OPEN;
+                    }
+
+                } else if (currentState === STATE.CLOSING_SLIDE) {
+                    // 4. Return Envelope to Center
+                    envelopeGroup.position.lerp(new THREE.Vector3(0, 0, 0), 0.08);
+                    
+                    // Reset Envelope Rotation to Flat
+                    const targetQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, 0));
+                    envelopeGroup.quaternion.slerp(targetQ, 0.08);
+
+                    // 5. Return Letter to Envelope
+                    letterMesh.position.lerp(envelopeGroup.position, 0.08);
+                    
+                    // Hide when close enough
+                    if (letterMesh.position.distanceTo(envelopeGroup.position) < 0.1) {
+                        letterMesh.visible = false;
+                        currentState = STATE.CLOSED;
+                        // Reset interaction variables
+                        currentFlipY = 0; tiltX = 0; tiltY = 0; isFlipped = false;
+                    }
+
+                } else {
+                    // IDLE / INTERACTIVE STATE
+                    envelopeGroup.position.lerp(new THREE.Vector3(0, Math.sin(Date.now() * 0.001) * 0.1, 0), 0.1);
+                    letterMesh.position.copy(envelopeGroup.position);
+                    
+                    let targetFlip = isFlipped ? Math.PI : 0;
+                    currentFlipY += (targetFlip - currentFlipY) * 0.08;
+                    
+                    let targetTiltX = 0, targetTiltY = 0;
+                    if(!isZoomed) { targetTiltX = mouse.y * 0.1; targetTiltY = mouse.x * 0.1; }
+                    tiltX += (targetTiltX - tiltX) * 0.05;
+                    tiltY += (targetTiltY - tiltY) * 0.05;
+
+                    const euler = new THREE.Euler(tiltX, currentFlipY + tiltY, 0);
+                    envelopeGroup.quaternion.setFromEuler(euler);
+                    letterMesh.quaternion.copy(envelopeGroup.quaternion);
+                }
+            }
+            
+            // Camera
+            if(currentState === STATE.CLOSED && isZoomed && stampGroupReference) {
+                 const worldPos = new THREE.Vector3();
+                 stampGroupReference.getWorldPosition(worldPos);
+                 targetCamPos.set(worldPos.x, worldPos.y, zoomZ);
+            }
+            camera.position.lerp(targetCamPos, 0.05);
+
+            renderer.render(scene, camera);
+        }
+
+        init();
+    </script>
+</body>
+</html>
